@@ -19,6 +19,7 @@
 #define LIBBPF_H
 
 #include "linux/bpf.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -34,6 +35,9 @@ enum bpf_probe_attach_type {
 int bcc_create_map(enum bpf_map_type map_type, const char *name,
                    int key_size, int value_size, int max_entries,
                    int map_flags);
+int bcc_create_map_btf(enum bpf_map_type map_type, const char *name,
+                       int key_size, int value_size, int max_entries,
+                       int map_flags, unsigned btf_fd, unsigned key_tid, unsigned value_tid);
 int bpf_update_elem(int fd, void *key, void *value, unsigned long long flags);
 int bpf_lookup_elem(int fd, void *key, void *value);
 int bpf_delete_elem(int fd, void *key);
@@ -60,6 +64,12 @@ int bcc_prog_load(enum bpf_prog_type prog_type, const char *name,
                   const struct bpf_insn *insns, int insn_len,
                   const char *license, unsigned kern_version,
                   int log_level, char *log_buf, unsigned log_buf_size);
+int bcc_prog_load_btf(enum bpf_prog_type prog_type, const char *name,
+                  const struct bpf_insn *insns, int insn_len,
+                  const char *license, unsigned kern_version,
+                  int log_level, char *log_buf, unsigned log_buf_size,
+                  int btf_fd, void *func_info, unsigned func_info_cnt, unsigned finfo_rec_size,
+                  void *line_info, unsigned line_info_cnt, unsigned linfo_rec_size);
 
 int bpf_attach_socket(int sockfd, int progfd);
 
@@ -115,6 +125,20 @@ int bpf_prog_get_tag(int fd, unsigned long long *tag);
 int bpf_prog_get_next_id(uint32_t start_id, uint32_t *next_id);
 int bpf_prog_get_fd_by_id(uint32_t id);
 int bpf_map_get_fd_by_id(uint32_t id);
+
+struct btf;
+struct btf_ext;
+bool bcc_load_btf(unsigned char *data, unsigned size,
+                 unsigned char *edata, unsigned esize,
+                 struct btf **btf, struct btf_ext **btf_ext);
+unsigned bcc_get_btf_fd(struct btf *btf);
+int bcc_get_btf_info(struct btf *btf, struct btf_ext *btf_ext,
+                     const char *fname, int *btf_fd,
+                     void **func_info, unsigned *func_info_cnt, unsigned *finfo_rec_size,
+                     void **line_info, unsigned *line_info_cnt, unsigned *linfo_rec_size);
+int bcc_get_map_tids(struct btf *btf, const char *struct_name,
+                     unsigned expected_ksize, unsigned expected_vsize,
+		     unsigned *key_tid, unsigned *value_tid);
 
 #define LOG_BUF_SIZE 65536
 
