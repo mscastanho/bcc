@@ -9,11 +9,12 @@
 # Copyright (c) 2015 Brendan Gregg.
 # Licensed under the Apache License, Version 2.0 (the "License")
 #
-# 17-Sep-2015   Brendan Gregg   Created this.
-# 29-Apr-2016   Allan McAleavy  Updated for BPF_PERF_OUTPUT.
-# 08-Oct-2016   Dina Goldshtein Support filtering by PID and TID.
-# 28-Dec-2018   Tim Douglas     Print flags argument, enable filtering
-# 06-Jan-2019   Takuma Kume     Support filtering by UID
+# 17-Sep-2015   Brendan Gregg    Created this.
+# 29-Apr-2016   Allan McAleavy   Updated for BPF_PERF_OUTPUT.
+# 08-Oct-2016   Dina Goldshtein  Support filtering by PID and TID.
+# 28-Dec-2018   Tim Douglas      Print flags argument, enable filtering
+# 06-Jan-2019   Takuma Kume      Support filtering by UID
+# 05-Feb-2019   Matheus Castanho Use jinja2 to template eBPF programs
 
 from __future__ import print_function
 from bcc import ArgString, BPF
@@ -22,6 +23,7 @@ import argparse
 import ctypes as ct
 from datetime import datetime, timedelta
 import os
+import jinja2 as j2
 
 # arguments
 examples = """examples:
@@ -87,7 +89,9 @@ struct val_t {
     u64 id;
     char comm[TASK_COMM_LEN];
     const char *fname;
+    {%- if extended_struct_member %}
     int flags; // EXTENDED_STRUCT_MEMBER
+    {%- endif %}
 };
 
 struct data_t {
@@ -97,7 +101,9 @@ struct data_t {
     int ret;
     char comm[TASK_COMM_LEN];
     char fname[NAME_MAX];
+    {%- if extended_struct_member %}
     int flags; // EXTENDED_STRUCT_MEMBER
+    {%- endif %}
 };
 
 BPF_HASH(infotmp, u64, struct val_t);
@@ -111,13 +117,23 @@ int trace_entry(struct pt_regs *ctx, int dfd, const char __user *filename, int f
     u32 tid = id;       // Cast and get the lower part
     u32 uid = bpf_get_current_uid_gid();
 
-    PID_TID_FILTER
-    UID_FILTER
-    FLAGS_FILTER
+    {% if args.tid %}
+    if (tid != {{ args.tid }}) { return 0; }
+    {% elif args.pid %}
+    if (pid != {{ args.pid }}) { return 0; }
+    {%- endif %}
+    {%- if args.uid %}
+    if (uid != {{ args.uid }}) { return 0; }
+    {% endif %}
+    {%- if args.flag_filter %}
+    if (!(flags & {{ flag_filter_mask }})) { return 0; }
+    {% endif %}
     if (bpf_get_current_comm(&val.comm, sizeof(val.comm)) == 0) {
         val.id = id;
         val.fname = filename;
+        {% if extended_struct_member %}
         val.flags = flags; // EXTENDED_STRUCT_MEMBER
+        {% endif %}
         infotmp.update(&id, &val);
     }
 
@@ -142,7 +158,9 @@ int trace_return(struct pt_regs *ctx)
     data.id = valp->id;
     data.ts = tsp / 1000;
     data.uid = bpf_get_current_uid_gid();
+    {%- if extended_struct_member %}
     data.flags = valp->flags; // EXTENDED_STRUCT_MEMBER
+    {% endif %}
     data.ret = PT_REGS_RC(ctx);
 
     events.perf_submit(ctx, &data, sizeof(data));
@@ -151,27 +169,15 @@ int trace_return(struct pt_regs *ctx)
     return 0;
 }
 """
-if args.tid:  # TID trumps PID
-    bpf_text = bpf_text.replace('PID_TID_FILTER',
-        'if (tid != %s) { return 0; }' % args.tid)
-elif args.pid:
-    bpf_text = bpf_text.replace('PID_TID_FILTER',
-        'if (pid != %s) { return 0; }' % args.pid)
-else:
-    bpf_text = bpf_text.replace('PID_TID_FILTER', '')
-if args.uid:
-    bpf_text = bpf_text.replace('UID_FILTER',
-        'if (uid != %s) { return 0; }' % args.uid)
-else:
-    bpf_text = bpf_text.replace('UID_FILTER', '')
-if args.flag_filter:
-    bpf_text = bpf_text.replace('FLAGS_FILTER',
-        'if (!(flags & %d)) { return 0; }' % flag_filter_mask)
-else:
-    bpf_text = bpf_text.replace('FLAGS_FILTER', '')
-if not (args.extended_fields or args.flag_filter):
-    bpf_text = '\n'.join(x for x in bpf_text.split('\n')
-        if 'EXTENDED_STRUCT_MEMBER' not in x)
+
+extended_struct_member = False
+if args.extended_fields or args.flag_filter:
+    extended_struct_member = True
+
+t = j2.Template(bpf_text)
+bpf_text = t.render(args=args, flag_filter_mask=flag_filter_mask,
+        extended_struct_member=extended_struct_member)
+
 if debug or args.ebpf:
     print(bpf_text)
     if args.ebpf:
